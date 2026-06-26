@@ -47,6 +47,43 @@ Everything lands in `<repo>/.groundwork/` (add it to `.gitignore`). The map vend
 
 Auto-detects, in order: known monorepo dirs (`services/ apps/ tools/ packages/ libs/ …`) → top-level code dirs → single-package fallback (the repo itself). Override with `--groups a,b,c`.
 
+## Command reference
+
+Every subcommand takes a `repo` path (except `doctor`) and these options:
+
+| Option | Applies to | Default | Meaning |
+|--------|-----------|---------|---------|
+| `--out OUT` | all | `.groundwork` | output dir, relative to the repo |
+| `--groups GROUPS` | all | auto-detect | comma-separated subsystem dirs to map |
+| `--open` | `map`, `run` | off | open the generated HTML when done |
+| `--fest` | `plan`, `run` | off | also scaffold a `fest` festival from the plan |
+
+| Command | Usage | Produces |
+|---------|-------|----------|
+| `gw index` | `gw index <repo> [--out] [--groups]` | `<out>/system-index.json` |
+| `gw map` | `gw map <repo> [--out] [--groups] [--open]` | `<out>/system-map.html` (+ vendored cytoscape) |
+| `gw plan` | `gw plan <repo> [--out] [--groups] [--fest]` | `<out>/plan.md` |
+| `gw run` | `gw run <repo> [--out] [--groups] [--open] [--fest]` | index + map + plan |
+| `gw doctor` | `gw doctor [--out] [--groups]` | a readiness report (no repo needed) |
+
+## Examples
+
+```bash
+gw run .                              # map + plan the current repo
+gw run "C:\path\to\repo" --open       # full pipeline, then open the map
+gw map . --groups services,apps,tools # only these subsystems
+gw plan . --fest                      # scaffold a fest festival from the plan
+gw index . --out .gw                  # write the index to a custom dir
+gw doctor                             # which accelerators + LLM are available
+```
+
+## Troubleshooting
+
+- **Map is blank / falls back to CDN offline** — the vendored Cytoscape assets in `<out>/` are missing; re-run `gw map <repo>`.
+- **"no subsystems found"** — auto-detection found nothing; pass them explicitly with `--groups a,b,c`.
+- **Churn / staleness findings are empty** — the target isn't a git repo (or is a shallow clone); those findings need git history.
+- **`gw` not found after install** — open a new shell so PATH refreshes, or run `python -m groundwork.cli ...` in place.
+
 ## Provenance
 
 Lifted from Pre Atlas's audit tooling (`audit/build_system_index.py` + `audit/imports/_build_map.py`) and de-hardcoded so it runs against any repo. The map generator and its Cytoscape view are reused wholesale; the indexer was generalized and the plan stage is new. This is the `groundwork` / `code-recon` + `fest` pipeline, lifted out of the Claude Code skill harness into a standalone tool.
