@@ -63,7 +63,24 @@ def cmd_index(args) -> int:
     root = _resolve(args.repo)
     groups = args.groups.split(",") if args.groups else None
     idx = indexer.build_index(root, groups=groups, out_dir=args.out)
-    print(f"OK indexed {idx['subsystem_count']} subsystems -> {root / args.out / 'system-index.json'}")
+    out_path = root / args.out / "system-index.json"
+    if getattr(args, "json", False):
+        import hashlib
+        import json
+        # Stable content-address: hash the canonical index WITHOUT the wall-clock
+        # generated_at (indexer stamps it) so the same tree yields the same sha256
+        # join key run-to-run -- the key the integration seam lifts from this receipt.
+        canon = {k: v for k, v in idx.items() if k != "generated_at"}
+        digest = hashlib.sha256(
+            json.dumps(canon, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        print(json.dumps({
+            "tool": "gw", "op": "index", "sha256": digest,
+            "subsystem_count": idx["subsystem_count"],
+            "artifacts": {"system_index": str(out_path).replace("\\", "/")},
+        }))
+        return 0
+    print(f"OK indexed {idx['subsystem_count']} subsystems -> {out_path}")
     for e in idx["entries"][:40]:
         port = f" :{e['port']}" if e.get("port") else ""
         print(f"  - {e['path']:<32} {e['language']:<7} {e['framework']:<9} "
@@ -166,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="comma-separated subsystem dirs (default: auto-detect)")
 
     sp = sub.add_parser("index", help="write system-index.json"); add_common(sp)
+    sp.add_argument("--json", action="store_true",
+                    help="print a content-addressed JSON receipt to stdout (for tooling/seam)")
     sp.set_defaults(func=cmd_index)
     sp = sub.add_parser("map", help="write the interactive system map"); add_common(sp)
     sp.add_argument("--open", action="store_true", help="open the HTML when done")
