@@ -70,13 +70,15 @@ def cmd_index(args) -> int:
         # Stable content-address: hash the canonical index WITHOUT the wall-clock
         # generated_at (indexer stamps it) so the same tree yields the same sha256
         # join key run-to-run -- the key the integration seam lifts from this receipt.
-        canon = {k: v for k, v in idx.items() if k != "generated_at"}
+        # Strip BOTH the wall-clock stamp and the absolute repo_root so the join key is
+        # content-stable across clones / machines (repo_name basename is kept -- it's portable).
+        canon = {k: v for k, v in idx.items() if k not in {"generated_at", "repo_root"}}
         digest = hashlib.sha256(
             json.dumps(canon, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         print(json.dumps({
             "tool": "gw", "op": "index", "sha256": digest,
-            "subsystem_count": idx["subsystem_count"],
+            "subsystem_count": idx.get("subsystem_count", 0),
             "artifacts": {"system_index": str(out_path).replace("\\", "/")},
         }))
         return 0
