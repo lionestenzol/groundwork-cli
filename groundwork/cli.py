@@ -51,6 +51,24 @@ def _resolve(repo: str) -> Path:
     return root
 
 
+def _canon_index(idx: dict) -> dict:
+    """The content-stable view of a system-index: drop the wall-clock stamp and the
+    absolute repo_root so the same tree yields the same hash run-to-run / machine-to-
+    machine (repo_name basename is kept -- it's portable)."""
+    return {k: v for k, v in idx.items() if k not in {"generated_at", "repo_root"}}
+
+
+def _content_sha256(payload) -> str:
+    """Canonical sha256 over any JSON-able payload (sort_keys -> stable join key).
+    The single content-address used by every gw receipt -- shared by cmd_index and
+    cmd_run so there is ONE addressing scheme, not two."""
+    import hashlib
+    import json
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _ensure_index(root: Path, out: str, groups: list[str] | None) -> dict:
     idx_path = root / out / "system-index.json"
     if idx_path.is_file():
@@ -65,17 +83,11 @@ def cmd_index(args) -> int:
     idx = indexer.build_index(root, groups=groups, out_dir=args.out)
     out_path = root / args.out / "system-index.json"
     if getattr(args, "json", False):
-        import hashlib
         import json
         # Stable content-address: hash the canonical index WITHOUT the wall-clock
         # generated_at (indexer stamps it) so the same tree yields the same sha256
         # join key run-to-run -- the key the integration seam lifts from this receipt.
-        # Strip BOTH the wall-clock stamp and the absolute repo_root so the join key is
-        # content-stable across clones / machines (repo_name basename is kept -- it's portable).
-        canon = {k: v for k, v in idx.items() if k not in {"generated_at", "repo_root"}}
-        digest = hashlib.sha256(
-            json.dumps(canon, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
+        digest = _content_sha256(_canon_index(idx))
         print(json.dumps({
             "tool": "gw", "op": "index", "sha256": digest,
             "subsystem_count": idx.get("subsystem_count", 0),
@@ -120,15 +132,58 @@ def cmd_plan(args) -> int:
 def cmd_run(args) -> int:
     root = _resolve(args.repo)
     groups = args.groups.split(",") if args.groups else None
+    as_json = getattr(args, "json", False)
     idx = indexer.build_index(root, groups=groups, out_dir=args.out)
-    print(f"OK indexed {idx['subsystem_count']} subsystems")
+    if not as_json:
+        print(f"OK indexed {idx['subsystem_count']} subsystems")
     summary = build_map.build(root, _map_config(args.out))
-    print(f"OK map  -> {summary['out_primary_html']}")
+    if not as_json:
+        print(f"OK map  -> {summary['out_primary_html']}")
     res = planner.run(root / args.out, root, fest=args.fest)
-    print(f"OK plan -> {res['plan_md']}  "
-          f"({res['missing_tests']} untested - {res['stale']} stale - {res['hotspots']} hotspots)")
-    if res["fest"]:
-        print(f"  - fest: {res['fest']}")
+    if not as_json:
+        print(f"OK plan -> {res['plan_md']}  "
+              f"({res['missing_tests']} untested - {res['stale']} stale - {res['hotspots']} hotspots)")
+        if res["fest"]:
+            print(f"  - fest: {res['fest']}")
+
+    if as_json:
+        import json
+        index_path = root / args.out / "system-index.json"
+        plan_path = Path(res["plan_md"])
+        plan_text = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else ""
+        festival = res.get("fest")
+        recon_ledger = root / ".audit" / "recon-ledger.jsonl"
+        ledger_content = (
+            recon_ledger.read_text(encoding="utf-8") if recon_ledger.is_file() else None
+        )
+        # ONE content-address over the combined artifacts: the canonical index (no
+        # wall-clock / abs repo_root), the plan text, the sorted festival file list,
+        # and the recon ledger when present -- so the dossier hash is stable run-to-run
+        # on the same tree. Reuses the same _content_sha256 join key as cmd_index.
+        fest_files = (
+            sorted(p.name for p in Path(festival).rglob("*") if p.is_file())
+            if festival and Path(festival).is_dir()
+            else []
+        )
+        digest = _content_sha256({
+            "index": _canon_index(idx),
+            "plan_md": plan_text,
+            "festival_files": fest_files,
+            "recon_ledger": ledger_content,
+        })
+        print(json.dumps({
+            "tool": "gw", "op": "run", "sha256": digest,
+            "artifacts": {
+                "system_index": str(index_path).replace("\\", "/"),
+                "plan_md": str(plan_path).replace("\\", "/"),
+                "festival": str(festival).replace("\\", "/") if festival else None,
+                "recon_ledger": (
+                    str(recon_ledger).replace("\\", "/") if ledger_content is not None else None
+                ),
+            },
+        }))
+        return 0
+
     if args.open:
         _open(summary["out_primary_html"])
     return 0
@@ -197,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("run", help="full pipeline: index + map + plan"); add_common(sp)
     sp.add_argument("--open", action="store_true", help="open the map when done")
     sp.add_argument("--fest", action="store_true", help="also scaffold a fest festival")
+    sp.add_argument("--json", action="store_true",
+                    help="print ONE content-addressed dossier receipt to stdout (for tooling/seam)")
     sp.set_defaults(func=cmd_run)
     sp = sub.add_parser("doctor", help="report available tools"); add_common(sp, repo=False)
     sp.set_defaults(func=cmd_doctor)
